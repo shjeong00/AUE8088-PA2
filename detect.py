@@ -34,6 +34,8 @@ import os
 import platform
 import sys
 from pathlib import Path
+import glob as glob
+import cv2
 
 import torch
 
@@ -326,7 +328,7 @@ def main(opt):
     check_requirements(ROOT / "requirements.txt", exclude=("tensorboard", "thop"))
     run(**vars(opt))
     # here to modify
-    save_dir = "/home/steven/git_HW/aue8088-pa2/runs/detect/forvid"
+    save_dir = "/home/steven/git_HW/aue8088-pa2/runs/detect/exp24"
     img_files = glob.glob(os.path.join(save_dir,'*.jpg'))
     if not img_files:
         print("No image files found in the specified directory")
