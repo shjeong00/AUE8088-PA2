@@ -308,41 +308,41 @@ def parse_opt():
 #     check_requirements(ROOT / "requirements.txt", exclude=("tensorboard", "thop"))
 #     run(**vars(opt))
 
-#fixed code to qualification
-# def main(opt):
-#     """Executes YOLOv5 model inference with given options, checking requirements before running the model."""
-#     check_requirements(ROOT / "requirements.txt", exclude=("tensorboard", "thop"))
-#     run(**vars(opt))
-#     # added to qualitative evaluation
-#     results = run(**vars(opt))
-#     for path, img, pred, im0 in zip(results.files, results.imgs, results.pred, results.im0s):
-#         # Draw bounding boxes on the image
-#         plot_images(img, pred, paths=path)
-#         # Save image
-#         cv2.imwrite(str(Path(path).with_suffix('.jpg')), im0)
-#         import imageio
-#         imageio.mimsave(str(Path(path).with_suffix('.gif')), [im0], fps=30)
-#for video
+# fixed code to qualification
 def main(opt):
     """Executes YOLOv5 model inference with given options, checking requirements before running the model."""
     check_requirements(ROOT / "requirements.txt", exclude=("tensorboard", "thop"))
     run(**vars(opt))
-    # here to modify
-    save_dir = "/home/steven/git_HW/aue8088-pa2/runs/detect/exp24"
-    img_files = glob.glob(os.path.join(save_dir,'*.jpg'))
-    if not img_files:
-        print("No image files found in the specified directory")
-        return
-    img_files.sort()
-    img = cv2.imread(img_files[0])
-    height, width, layers = img.shape
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    video = cv2.VideoWriter('output.mp4', fourcc, 10, (width, height))
-    for img_file in img_files:
-        img = cv2.imread(img_file)
-        video.write(img)
-    video.release()
-    print("The detected images were successfully converted to a video")
+    # added to qualitative evaluation
+    results = run(**vars(opt))
+    for path, img, pred, im0 in zip(results.files, results.imgs, results.pred, results.im0s):
+        # Draw bounding boxes on the image
+        plot_images(img, pred, paths=path)
+        # Save image
+        cv2.imwrite(str(Path(path).with_suffix('.jpg')), im0)
+        import imageio
+        imageio.mimsave(str(Path(path).with_suffix('.gif')), [im0], fps=30)
+#for video
+# def main(opt):
+#     """Executes YOLOv5 model inference with given options, checking requirements before running the model."""
+#     check_requirements(ROOT / "requirements.txt", exclude=("tensorboard", "thop"))
+#     run(**vars(opt))
+#     # here to modify
+#     save_dir = "/home/steven/git_HW/aue8088-pa2/runs/detect/exp24"
+#     img_files = glob.glob(os.path.join(save_dir,'*.jpg'))
+#     if not img_files:
+#         print("No image files found in the specified directory")
+#         return
+#     img_files.sort()
+#     img = cv2.imread(img_files[0])
+#     height, width, layers = img.shape
+#     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+#     video = cv2.VideoWriter('output.mp4', fourcc, 10, (width, height))
+#     for img_file in img_files:
+#         img = cv2.imread(img_file)
+#         video.write(img)
+#     video.release()
+#     print("The detected images were successfully converted to a video")
 
 if __name__ == "__main__":
     opt = parse_opt()
