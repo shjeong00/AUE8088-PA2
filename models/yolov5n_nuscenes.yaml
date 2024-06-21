@@ -6,7 +6,7 @@ nc: 4 # number of classes
 depth_multiple: 0.33 # model depth multiple
 width_multiple: 0.25 # layer channel multiple
 anchors:
-  #ORIGINAL
+
   # - [10, 13] # P3/8
   # - [30, 61] # P4/16
   # - [62, 45] # P5/32
