@@ -16,6 +16,24 @@ from utils.metrics import bbox_ioa
 IMAGENET_MEAN = 0.485, 0.456, 0.406  # RGB mean
 IMAGENET_STD = 0.229, 0.224, 0.225  # RGB standard deviation
 
+# YOLOv5 🚀 by Ultralytics, AGPL-3.0 license
+"""Image augmentation functions."""
+
+import math
+import random
+
+import cv2
+import numpy as np
+import torch
+import torchvision.transforms as T
+import torchvision.transforms.functional as TF
+
+from utils.general import LOGGER, check_version, colorstr, resample_segments, segment2box, xywhn2xyxy
+from utils.metrics import bbox_ioa
+
+IMAGENET_MEAN = 0.485, 0.456, 0.406  # RGB mean
+IMAGENET_STD = 0.229, 0.224, 0.225  # RGB standard deviation
+
 
 class Albumentations:
     # YOLOv5 Albumentations class (optional, only used if package is installed)
@@ -30,19 +48,19 @@ class Albumentations:
 
             T = [
                 A.RandomResizedCrop(height=size, width=size, scale=(0.8, 1.0), ratio=(0.9, 1.11), p=0.0),
-                A.Blur(p=0.01),
-                A.MedianBlur(p=0.01),
-                A.ToGray(p=0.01),
-                A.CLAHE(p=0.01),
-                A.RandomBrightnessContrast(p=0.0),
-                A.RandomGamma(p=0.0),
-                A.ImageCompression(quality_lower=75, p=0.0),
+                A.Blur(p=0.05),
+                A.MedianBlur(p=0.05),
+                A.ToGray(p=0.05),
+                A.CLAHE(p=0.05),
+                A.RandomBrightnessContrast(p=0.1),
+                A.RandomGamma(p=0.1),
+                A.ImageCompression(quality_lower=75, p=0.05),
             ]  # transforms
             self.transform = A.Compose(T, bbox_params=A.BboxParams(format="yolo", label_fields=["class_labels"]))
 
             LOGGER.info(prefix + ", ".join(f"{x}".replace("always_apply=False, ", "") for x in T if x.p))
         except ImportError:  # package not installed, skip
-            pass
+            LOGGER.warning(f"{prefix}⚠️ albumentations not found, install with `pip install albumentations` (recommended)")
         except Exception as e:
             LOGGER.info(f"{prefix}{e}")
 
@@ -52,6 +70,313 @@ class Albumentations:
             new = self.transform(image=im, bboxes=labels[:, 1:], class_labels=labels[:, 0])  # transformed
             im, labels = new["image"], np.array([[c, *b] for c, b in zip(new["class_labels"], new["bboxes"])])
         return im, labels
+
+
+def normalize(x, mean=IMAGENET_MEAN, std=IMAGENET_STD, inplace=False):
+    """
+    Applies ImageNet normalization to RGB images in BCHW format, modifying them in-place if specified.
+
+    Example: y = (x - mean) / std
+    """
+    return TF.normalize(x, mean, std, inplace=inplace)
+
+
+def denormalize(x, mean=IMAGENET_MEAN, std=IMAGENET_STD):
+    """Reverses ImageNet normalization for BCHW format RGB images by applying `x = x * std + mean`."""
+    for i in range(3):
+        x[:, i] = x[:, i] * std[i] + mean[i]
+    return x
+
+
+def augment_hsv(im, hgain=0.5, sgain=0.5, vgain=0.5):
+    """Applies HSV color-space augmentation to an image with random gains for hue, saturation, and value."""
+    if hgain or sgain or vgain:
+        r = np.random.uniform(-1, 1, 3) * [hgain, sgain, vgain] + 1  # random gains
+        hue, sat, val = cv2.split(cv2.cvtColor(im, cv2.COLOR_BGR2HSV))
+        dtype = im.dtype  # uint8
+
+        x = np.arange(0, 256, dtype=r.dtype)
+        lut_hue = ((x * r[0]) % 180).astype(dtype)
+        lut_sat = np.clip(x * r[1], 0, 255).astype(dtype)
+        lut_val = np.clip(x * r[2], 0, 255).astype(dtype)
+
+        im_hsv = cv2.merge((cv2.LUT(hue, lut_hue), cv2.LUT(sat, lut_sat), cv2.LUT(val, lut_val)))
+        cv2.cvtColor(im_hsv, cv2.COLOR_HSV2BGR, dst=im)  # no return needed
+
+
+def hist_equalize(im, clahe=True, bgr=False):
+    """Equalizes image histogram, with optional CLAHE, for BGR or RGB image with shape (n,m,3) and range 0-255."""
+    yuv = cv2.cvtColor(im, cv2.COLOR_BGR2YUV if bgr else cv2.COLOR_RGB2YUV)
+    if clahe:
+        c = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        yuv[:, :, 0] = c.apply(yuv[:, :, 0])
+    else:
+        yuv[:, :, 0] = cv2.equalizeHist(yuv[:, :, 0])  # equalize Y channel histogram
+    return cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR if bgr else cv2.COLOR_YUV2RGB)  # convert YUV image to RGB
+
+
+def replicate(im, labels):
+    """
+    Replicates half of the smallest object labels in an image for data augmentation.
+
+    Returns augmented image and labels.
+    """
+    h, w = im.shape[:2]
+    boxes = labels[:, 1:].astype(int)
+    x1, y1, x2, y2 = boxes.T
+    s = ((x2 - x1) + (y2 - y1)) / 2  # side length (pixels)
+    for i in s.argsort()[: round(s.size * 0.5)]:  # smallest indices
+        x1b, y1b, x2b, y2b = boxes[i]
+        bh, bw = y2b - y1b, x2b - x1b
+        yc, xc = int(random.uniform(0, h - bh)), int(random.uniform(0, w - bw))  # offset x, y
+        x1a, y1a, x2a, y2a = [xc, yc, xc + bw, yc + bh]
+        im[y1a:y2a, x1a:x2a] = im[y1b:y2b, x1b:x2b]  # im4[ymin:ymax, xmin:xmax]
+        labels = np.append(labels, [[labels[i, 0], x1a, y1a, x2a, y2a]], axis=0)
+
+    return im, labels
+
+
+def letterbox(im, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleFill=False, scaleup=True, stride=32):
+    """Resizes and pads image to new_shape with stride-multiple constraints, returns resized image, ratio, padding."""
+    shape = im.shape[:2]  # current shape [height, width]
+    if isinstance(new_shape, int):
+        new_shape = (new_shape, new_shape)
+
+    # Scale ratio (new / old)
+    r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
+    if not scaleup:  # only scale down, do not scale up (for better val mAP)
+        r = min(r, 1.0)
+
+    # Compute padding
+    ratio = r, r  # width, height ratios
+    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+    dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
+    if auto:  # minimum rectangle
+        dw, dh = np.mod(dw, stride), np.mod(dh, stride)  # wh padding
+    elif scaleFill:  # stretch
+        dw, dh = 0.0, 0.0
+        new_unpad = (new_shape[1], new_shape[0])
+        ratio = new_shape[1] / shape[1], new_shape[0] / shape[0]  # width, height ratios
+
+    dw /= 2  # divide padding into 2 sides
+    dh /= 2
+
+    if shape[::-1] != new_unpad:  # resize
+        im = cv2.resize(im, new_unpad, interpolation=cv2.INTER_LINEAR)
+    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+    left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+    im = cv2.copyMakeBorder(im, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
+    return im, ratio, (dw, dh)
+
+
+def cutout(im, labels):
+    """
+    Applies image cutout augmentation with randomly placed rectangles covering parts of the image.
+
+    Returns augmented image and labels.
+    """
+    h, w = im.shape[:2]
+    scales = [0.15] * 3  # fraction of image area to cut out
+    for s in scales:
+        mask_h = random.randint(1, int(h * s))
+        mask_w = random.randint(1, int(w * s))
+
+        xmin = max(0, random.randint(0, w) - mask_w // 2)
+        ymin = max(0, random.randint(0, h) - mask_h // 2)
+        xmax = min(w, xmin + mask_w)
+        ymax = min(h, ymin + mask_h)
+
+        im[ymin:ymax, xmin:xmax] = [random.randint(64, 191) for _ in range(3)]  # random color for cutout
+
+        if labels.size and s > 0.03:
+            box = np.array([xmin, ymin, xmax, ymax], dtype=np.float32)
+            ioa = bbox_ioa(box, labels[:, 1:5])  # intersection over area
+            labels = labels[ioa < 0.60]  # remove >60% overlap labels
+
+    return im, labels
+
+
+class Mixup:
+    # YOLOv5 Mixup class
+    def __init__(self, prob=0.5):
+        """Initializes Mixup class with a given probability for applying mixup augmentation."""
+        self.prob = prob
+
+    def __call__(self, im, labels, im2, labels2):
+        """Mixes two images and their labels based on the specified probability."""
+        if random.random() < self.prob:
+            r = np.random.beta(8.0, 8.0)  # mixup ratio, beta(8,8) beta distribution
+            im = (im * r + im2 * (1 - r)).astype(np.uint8)
+            labels = np.concatenate((labels, labels2), 0)
+        return im, labels
+
+
+class Letterbox:
+    # YOLOv5 Letterbox class for image preprocessing
+    def __init__(self, new_shape=(640, 640), color=(114, 114, 114), auto=True, scale_fill=False, scale_up=True, stride=32):
+        """Initializes the Letterbox class with specified parameters for image resizing and padding."""
+        self.new_shape = new_shape
+        self.color = color
+        self.auto = auto
+        self.scale_fill = scale_fill
+        self.scale_up = scale_up
+        self.stride = stride
+
+    def __call__(self, im):
+        """Resizes and pads image according to the parameters specified during initialization."""
+        return letterbox(im, self.new_shape, self.color, self.auto, self.scale_fill, self.scale_up, self.stride)[0]
+
+
+def classify_albumentations(im, p=0.5):
+    """Applies classification Albumentations augmentations to an image with a given probability."""
+    prefix = colorstr("albumentations: ")
+    try:
+        import albumentations as A
+
+        check_version(A.__version__, "1.0.3", hard=True)  # version requirement
+
+        T = [
+            A.RandomResizedCrop(height=size, width=size, scale=(0.8, 1.0), ratio=(0.9, 1.11), p=0.3),
+            A.HorizontalFlip(p=0.5),
+            A.Blur(p=0.05),
+            A.MedianBlur(p=0.05),
+            A.ToGray(p=0.02),
+            A.CLAHE(p=0.05),
+            A.RandomBrightnessContrast(p=0.2),
+            A.RandomGamma(p=0.2),
+            A.ImageCompression(quality_lower=75, p=0.1),
+            A.RandomShadow(p=0.2),
+            A.RandomRain(p=0.1),
+            A.RandomFog(p=0.1),
+            A.RandomSunFlare(p=0.1),
+            A.CoarseDropout(max_holes=8, max_height=0.2*size, max_width=0.2*size, min_holes=1, p=0.2),
+        ]  # transforms
+        transform = A.Compose(T)
+        if random.random() < p:
+            im = transform(image=im)["image"]  # transformed
+
+        LOGGER.info(prefix + ", ".join(f"{x}".replace("always_apply=False, ", "") for x in T if x.p))
+    except ImportError:  # package not installed, skip
+        LOGGER.warning(f"{prefix}⚠️ albumentations not found, install with `pip install albumentations` (recommended)")
+    except Exception as e:
+        LOGGER.info(f"{prefix}{e}")
+
+    return im
+
+
+class ClassificationAlbumentations:
+    # YOLOv5 Classification Albumentations class (optional, only used if package is installed)
+    def __init__(self):
+        """Initializes ClassificationAlbumentations class for optional data augmentation in YOLOv5."""
+        self.transform = None
+        prefix = colorstr("albumentations: ")
+        try:
+            import albumentations as A
+
+            check_version(A.__version__, "1.0.3", hard=True)  # version requirement
+
+            T = [
+                A.Blur(p=0.01),
+                A.MedianBlur(p=0.01),
+                A.ToGray(p=0.01),
+                A.CLAHE(p=0.01),
+                A.RandomBrightnessContrast(p=0.01),
+                A.RandomGamma(p=0.01),
+                A.ImageCompression(quality_lower=75, p=0.01),
+            ]  # transforms
+            self.transform = A.Compose(T)
+            LOGGER.info(prefix + ", ".join(f"{x}".replace("always_apply=False, ", "") for x in T if x.p))
+        except ImportError:  # package not installed, skip
+            LOGGER.warning(f"{prefix}⚠️ albumentations not found, install with `pip install albumentations` (recommended)")
+        except Exception as e:
+            LOGGER.info(f"{prefix}{e}")
+
+    def __call__(self, im, p=0.5):
+        """Applies transformations to an image with a specified probability."""
+        if self.transform and random.random() < p:
+            im = self.transform(image=im)["image"]  # transformed
+        return im
+
+
+class ClassificationTransforms:
+    # YOLOv5 Classification Transforms class
+    def __init__(self, size=224):
+        """Initializes ClassificationTransforms class with standard image transformations for classification."""
+        self.transforms = T.Compose([
+            T.RandomHorizontalFlip(p=0.5),
+            T.RandomResizedCrop(size=size, scale=(0.8, 1.0), ratio=(0.9, 1.1)),
+            T.ToTensor(),
+            T.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+        ])
+
+    def __call__(self, im):
+        """Applies standard classification transforms to an image."""
+        return self.transforms(im)
+
+
+def create_folder(path="./new_folder"):
+    """
+    Creates a new folder at the specified path if it doesn't exist.
+
+    Args:
+        path (str): The path to the folder to be created.
+    """
+    if not os.path.exists(path):
+        os.makedirs(path)
+        LOGGER.info(f"Created folder: {path}")
+    else:
+        LOGGER.info(f"Folder already exists: {path}")
+
+
+# class Albumentations:
+#     # YOLOv5 Albumentations class (optional, only used if package is installed)
+#     def __init__(self, size=640):
+#         """Initializes Albumentations class for optional data augmentation in YOLOv5 with specified input size."""
+#         self.transform = None
+#         prefix = colorstr("albumentations: ")
+#         try:
+#             import albumentations as A
+
+#             check_version(A.__version__, "1.0.3", hard=True)  # version requirement
+
+#             T = [
+#                 A.RandomResizedCrop(height=size, width=size, scale=(0.8, 1.0), ratio=(0.9, 1.11), p=0.0),
+#                 A.Blur(p=0.05), #240623 Edit Parameters ?
+#                 A.MedianBlur(p=0.05),
+#                 A.ToGray(p=0.05),
+#                 A.CLAHE(p=0.05),
+#                 A.RandomBrightnessContrast(p=0.1),
+#                 A.RandomGamma(p=0.1),
+#                 A.ImageCompression(quality_lower=75, p=0.05),
+#             ]  # transforms
+#             self.transform = A.Compose(T, bbox_params=A.BboxParams(format="yolo", label_fields=["class_labels"]))
+
+#             LOGGER.info(prefix + ", ".join(f"{x}".replace("always_apply=False, ", "") for x in T if x.p))
+#         except ImportError:  # package not installed, skip
+#             pass
+#         except Exception as e:
+#             LOGGER.info(f"{prefix}{e}")
+def random_shadow(self, p=0.2):
+        """Applies random shadow to an image."""
+        return A.RandomShadow(shadow_roi=(0, 0.5, 1, 1), num_shadows_lower=1, num_shadows_upper=2, shadow_dimension=5, p=p)
+
+def random_rain(self, p=0.1):
+    """Applies random rain effect to an image."""
+    return A.RandomRain(slant_lower=-10, slant_upper=10, drop_length=20, drop_width=1, drop_color=(200, 200, 200), blur_value=3, p=p)
+
+def random_fog(self, p=0.1):
+    """Applies random fog effect to an image."""
+    return A.RandomFog(fog_coef_lower=0.3, fog_coef_upper=1, alpha_coef=0.1, p=p)
+
+def random_sun_flare(self, p=0.1):
+    """Applies random sun flare effect to an image."""
+    return A.RandomSunFlare(flare_roi=(0, 0, 1, 0.5), angle_lower=0, angle_upper=1, num_flare_circles_lower=6, num_flare_circles_upper=10, src_radius=200, src_color=(255, 255, 255), p=p)
+
+def coarse_dropout(self, size, p=0.2):
+    """Applies coarse dropout to simulate occlusions."""
+    return A.CoarseDropout(max_holes=8, max_height=int(0.2 * size), max_width=int(0.2 * size), min_holes=1, min_height=8, min_width=8, p=p)
+
+
 
 
 def normalize(x, mean=IMAGENET_MEAN, std=IMAGENET_STD, inplace=False):
