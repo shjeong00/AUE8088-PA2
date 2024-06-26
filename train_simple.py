@@ -83,6 +83,7 @@ def train(hyp, opt, device, callbacks):
 
     `hyp` argument is path/to/hyp.yaml or hyp dictionary.
     """
+
     save_dir, epochs, batch_size, weights, single_cls, data, cfg, noval, nosave, workers = (
         Path(opt.save_dir),
         opt.epochs,
@@ -95,6 +96,9 @@ def train(hyp, opt, device, callbacks):
         opt.nosave,
         opt.workers,
     )
+    print(type(save_dir))
+    print("***************************",str(save_dir)+"/epoch_test")
+
     callbacks.run("on_pretrain_routine_start")
 
     # Directories
@@ -134,6 +138,14 @@ def train(hyp, opt, device, callbacks):
     init_seeds(opt.seed, deterministic=True)
     data_dict = data_dict or check_dataset(data)  # check if None
     train_path, val_path = data_dict["train"], data_dict["val"]
+    test_path = data_dict["test"]
+    # print("**************************** test path: " , test_path)
+    
+    #print("**************************** val path: " , val_path)
+    # test path
+    test_path = "/home/steven/git/kaist-rgbt/test-all-20.txt"
+
+
     nc = 1 if single_cls else int(data_dict["nc"])  # number of classes
     names = {0: data_dict["names"][0]} if single_cls and len(data_dict["names"]) != 1 else data_dict["names"]  # class names
 
@@ -186,7 +198,7 @@ def train(hyp, opt, device, callbacks):
         gs,
         single_cls,
         hyp=hyp,
-        augment=False,      # TODO: make it work
+        augment=True, #false      # TODO: make it work
         cache=None if opt.cache == "val" else opt.cache,
         rect=opt.rect,
         rank=-1,
@@ -218,6 +230,31 @@ def train(hyp, opt, device, callbacks):
         prefix=colorstr("val: "),
         rgbt_input=opt.rgbt,
     )[0]
+    print("*****************************val_loader done")
+
+    # test loader
+    
+
+    print("*****************************test_loader done")
+    #del val_loader
+    #torch.cuda.empty_cache()
+
+    #mine
+    # val_loader2 = create_dataloader(
+    #     val_path2,
+    #     imgsz,
+    #     batch_size * 2,
+    #     gs,
+    #     single_cls,
+    #     hyp=hyp,
+    #     cache=None,
+    #     rect=False,     # Should be set to False for validation, otherwise it will break evaluation pipeline
+    #     rank=-1,
+    #     workers=workers,
+    #     pad=0.5,
+    #     prefix=colorstr("val2: "),
+    #     rgbt_input=opt.rgbt,
+    # )[0]
 
     # pre-reduce anchor precision
     model.half().float()
@@ -386,13 +423,33 @@ def train(hyp, opt, device, callbacks):
         if f.exists():
             strip_optimizer(f)  # strip optimizers
             if f is best:
+                #####----- I FIXED HERE! -----#####
                 LOGGER.info(f"\nValidating {f}...")
+                #change of val_loader's path
+                val_loader = create_dataloader(
+                    test_path, #path changed to test path
+                    imgsz,
+                    batch_size * 2,
+                    gs,
+                    single_cls,
+                    hyp=hyp,
+                    cache=None,
+                    rect=False,     # Should be set to False for validation, otherwise it will break evaluation pipeline
+                    rank=-1,
+                    workers=workers,
+                    pad=0.5,
+                    prefix=colorstr("test: "),
+                    rgbt_input=opt.rgbt,
+                )[0]
+                #####----- I FIXED HERE! -----#####
                 results, _, _ = validate.run(
                     data_dict,
                     batch_size=batch_size * 2,
                     imgsz=imgsz,
                     model=attempt_load(f, device).half(),
+                    #model=attempt_load(f, device),
                     iou_thres=0.65 if is_coco else 0.60,  # best pycocotools at iou 0.65
+                    #iou_thres=0.65,
                     single_cls=single_cls,
                     dataloader=val_loader,
                     save_dir=save_dir,
@@ -400,8 +457,41 @@ def train(hyp, opt, device, callbacks):
                     verbose=True,
                     plots=False,
                     callbacks=callbacks,
-                    compute_loss=compute_loss,
+                    compute_loss=compute_loss, 
                 )  # val best model with plots
+                # mine3
+                # test_loader = create_dataloader(
+                #     test_path,
+                #     imgsz,
+                #     batch_size * 2,
+                #     gs,
+                #     single_cls,
+                #     hyp=hyp,
+                #     cache=None if opt.cache == "test" else opt.cache,# if noval else opt.cache,
+                #     rect=False,     # Should be set to False for validation, otherwise it will break evaluation pipeline
+                #     rank=-1,
+                #     workers=workers,
+                #     pad=0.5,
+                #     prefix=colorstr("val: "),
+                #     rgbt_input=opt.rgbt,
+                # )[0]
+                # results, _, _ = validate.run(
+                #     data_dict,
+                #     batch_size=batch_size * 2,
+                #     imgsz=imgsz,
+                #     model=attempt_load(f, device).half(),
+                #     #model=attempt_load(f, device),
+                #     iou_thres=0.65, #if is_coco else 0.60,  # best pycocotools at iou 0.65
+                #     single_cls=single_cls,
+                #     dataloader=test_loader,
+                #     save_dir=save_dir,
+                #     save_json=True,
+                #     verbose=True,
+                #     verbose=False,
+                #     plots=False,
+                #     callbacks=callbacks,
+                #     compute_loss=compute_loss, 
+                # )  # val best model with plots
                 if is_coco:
                     callbacks.run("on_fit_epoch_end", list(mloss) + list(results) + lr, epoch, best_fitness, fi)
 
